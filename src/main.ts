@@ -72,12 +72,9 @@ class QRScannerApp {
                 </svg>
                 <div class="flex-1">
                   <p id="result-text" class="text-sm text-gray-700 break-all font-mono bg-white p-2 rounded border"></p>
-                  <div class="mt-2 flex gap-2">
+                  <div class="mt-2">
                     <button id="copy-result" class="bg-green-500 hover:bg-green-600 text-white text-sm py-1 px-3 rounded transition duration-200">
                       📋 コピー
-                    </button>
-                    <button id="save-result" class="bg-blue-500 hover:bg-blue-600 text-white text-sm py-1 px-3 rounded transition duration-200">
-                      💾 履歴に保存
                     </button>
                   </div>
                 </div>
@@ -102,7 +99,7 @@ class QRScannerApp {
               </button>
               <div id="history-content" class="hidden">
                 <div class="px-4 pb-4">
-                  <div id="history-list" class="space-y-2 max-h-64 overflow-y-auto">
+                  <div id="history-list" class="space-y-2 max-h-80 overflow-y-auto">
                     <!-- 履歴アイテムがここに表示される -->
                   </div>
                   <div class="mt-3 pt-3 border-t border-gray-200 flex gap-2">
@@ -196,7 +193,6 @@ class QRScannerApp {
     const startButton = document.getElementById('start-scan')!
     const stopButton = document.getElementById('stop-scan')!
     const copyButton = document.getElementById('copy-result')!
-    const saveButton = document.getElementById('save-result')!
     const privacyToggle = document.getElementById('privacy-toggle')!
     const historyToggle = document.getElementById('history-toggle')!
     const clearHistory = document.getElementById('clear-history')!
@@ -205,7 +201,6 @@ class QRScannerApp {
     startButton.addEventListener('click', () => this.startScanning())
     stopButton.addEventListener('click', () => this.stopScanning())
     copyButton.addEventListener('click', () => this.copyResult())
-    saveButton.addEventListener('click', () => this.saveCurrentResult())
     privacyToggle.addEventListener('click', () => this.togglePrivacy())
     historyToggle.addEventListener('click', () => this.toggleHistory())
     clearHistory.addEventListener('click', () => this.clearHistory())
@@ -256,9 +251,11 @@ class QRScannerApp {
         }
       )
 
-      await this.scanner.start()
+      // UIを先に更新してビデオ要素を表示
       this.isScanning = true
       this.updateUI()
+      
+      await this.scanner.start()
       this.hideError()
       
     } catch (error) {
@@ -284,14 +281,28 @@ class QRScannerApp {
     this.updateUI()
   }
 
-  private onScanSuccess(result: string) {
-    document.getElementById('result-text')!.textContent = result
+  private async onScanSuccess(result: string) {
+    const resultElement = document.getElementById('result-text')!
+    const qrType = this.detectQRType(result)
+    
+    // URLの場合はリンク化、それ以外はテキスト表示
+    if (qrType === 'URL') {
+      resultElement.innerHTML = `<a href="${result}" target="_blank" rel="noopener noreferrer" class="text-blue-600 hover:text-blue-800 underline">${result}</a>`
+    } else {
+      resultElement.textContent = result
+    }
+    
     document.getElementById('result-container')!.classList.remove('hidden')
     this.hideError()
+    
+    // 自動で履歴に保存（重複チェック付き）
+    await this.autoSaveToHistory(result)
   }
 
   private async copyResult() {
-    const resultText = document.getElementById('result-text')!.textContent
+    const resultElement = document.getElementById('result-text')!
+    // リンクの場合はtextContentで、テキストの場合もtextContentを使用
+    const resultText = resultElement.textContent || resultElement.innerText
     if (resultText) {
       try {
         await navigator.clipboard.writeText(resultText)
@@ -387,16 +398,21 @@ class QRScannerApp {
     if (resultText) resultText.textContent = ''
   }
 
-  // 履歴保存機能
-  private async saveCurrentResult() {
-    const resultText = document.getElementById('result-text')!.textContent
-    if (!resultText) return
+  // 自動履歴保存機能（重複チェック付き）
+  private async autoSaveToHistory(result: string) {
+    if (!result) return
+
+    // 最新の履歴と同一かチェック
+    if (this.scanHistory.length > 0 && this.scanHistory[0].data === result) {
+      console.log('重複するデータのため保存をスキップ')
+      return
+    }
 
     const historyItem: ScanHistoryItem = {
       id: Date.now().toString(),
-      data: resultText,
+      data: result,
       timestamp: Date.now(),
-      type: this.detectQRType(resultText)
+      type: this.detectQRType(result)
     }
 
     this.scanHistory.unshift(historyItem)
@@ -409,13 +425,38 @@ class QRScannerApp {
     await this.saveHistory()
     this.updateHistoryUI()
 
-    // 保存完了メッセージ
-    const button = document.getElementById('save-result')!
-    const originalText = button.textContent
-    button.textContent = '✅ 保存完了'
+    // 自動保存完了の視覚的フィードバック
+    this.showAutoSaveNotification()
+  }
+
+
+  // 自動保存通知の表示
+  private showAutoSaveNotification() {
+    const resultContainer = document.getElementById('result-container')
+    if (!resultContainer) return
+
+    // 既存の通知があれば削除
+    const existingNotification = resultContainer.querySelector('.auto-save-notification')
+    if (existingNotification) {
+      existingNotification.remove()
+    }
+
+    // 通知要素を作成
+    const notification = document.createElement('div')
+    notification.className = 'auto-save-notification mt-2 text-sm text-green-600 flex items-center'
+    notification.innerHTML = `
+      <svg class="w-4 h-4 mr-1" fill="currentColor" viewBox="0 0 20 20">
+        <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clip-rule="evenodd"></path>
+      </svg>
+      履歴に自動保存されました
+    `
+
+    resultContainer.appendChild(notification)
+
+    // 3秒後に非表示
     setTimeout(() => {
-      button.textContent = originalText
-    }, 2000)
+      notification.remove()
+    }, 3000)
   }
 
   private detectQRType(data: string): string {
@@ -467,15 +508,19 @@ class QRScannerApp {
       
       const typeIcon = this.getTypeIcon(item.type)
       const preview = item.data.length > 50 ? item.data.substring(0, 50) + '...' : item.data
+      const isUrl = item.type === 'URL'
       
       return `
-        <div class="flex items-start p-2 bg-gray-50 rounded border hover:bg-gray-100 transition-colors cursor-pointer" onclick="window.qrApp.copyHistoryItem('${item.id}')">
-          <span class="text-lg mr-2 flex-shrink-0">${typeIcon}</span>
+        <div class="flex items-start p-3 bg-gray-50 rounded border hover:bg-gray-100 transition-colors cursor-pointer" onclick="window.qrApp.copyHistoryItem('${item.id}')">
+          <span class="text-lg mr-3 flex-shrink-0">${typeIcon}</span>
           <div class="flex-1 min-w-0">
             <p class="text-xs text-gray-500 mb-1">${date} • ${item.type}</p>
-            <p class="text-sm text-gray-700 break-all font-mono">${preview}</p>
+            ${isUrl ? 
+              `<a href="${item.data}" target="_blank" rel="noopener noreferrer" class="text-sm text-blue-600 hover:text-blue-800 underline break-all font-mono" onclick="event.stopPropagation()">${preview}</a>` :
+              `<p class="text-sm text-gray-700 break-all font-mono">${preview}</p>`
+            }
           </div>
-          <button class="ml-2 text-gray-400 hover:text-red-600 flex-shrink-0" onclick="event.stopPropagation(); window.qrApp.deleteHistoryItem('${item.id}')">
+          <button class="ml-3 text-gray-400 hover:text-red-600 flex-shrink-0" onclick="event.stopPropagation(); window.qrApp.deleteHistoryItem('${item.id}')">
             🗑️
           </button>
         </div>
