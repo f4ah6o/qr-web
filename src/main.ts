@@ -19,11 +19,16 @@ class QRScannerApp {
     this.init()
   }
 
-  private async init() {
-    await this.initOPFS()
-    await this.loadHistory()
+  private init() {
     this.render()
     this.setupEventListeners()
+    // 非同期処理は別途実行
+    this.initializeAsync()
+  }
+
+  private async initializeAsync() {
+    await this.initOPFS()
+    await this.loadHistory()
   }
 
   private render() {
@@ -375,8 +380,11 @@ class QRScannerApp {
 
   // 結果クリア機能
   private clearCurrentResult() {
-    document.getElementById('result-container')!.classList.add('hidden')
-    document.getElementById('result-text')!.textContent = ''
+    const resultContainer = document.getElementById('result-container')
+    const resultText = document.getElementById('result-text')
+    
+    if (resultContainer) resultContainer.classList.add('hidden')
+    if (resultText) resultText.textContent = ''
   }
 
   // 履歴保存機能
@@ -436,8 +444,11 @@ class QRScannerApp {
   }
 
   private updateHistoryUI() {
-    const historyList = document.getElementById('history-list')!
-    const historyCount = document.getElementById('history-count')!
+    const historyList = document.getElementById('history-list')
+    const historyCount = document.getElementById('history-count')
+    
+    // 要素が存在しない場合は何もしない（HTML描画前の場合）
+    if (!historyList || !historyCount) return
     
     historyCount.textContent = this.scanHistory.length.toString()
     
