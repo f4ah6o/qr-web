@@ -1,16 +1,27 @@
 import './style.css'
 import QrScanner from 'qr-scanner'
 
+interface ScanHistoryItem {
+  id: string
+  data: string
+  timestamp: number
+  type: string
+}
+
 class QRScannerApp {
   private scanner: QrScanner | null = null
   private videoElement: HTMLVideoElement | null = null
   private isScanning = false
+  private scanHistory: ScanHistoryItem[] = []
+  private opfsRoot: FileSystemDirectoryHandle | null = null
 
   constructor() {
     this.init()
   }
 
-  private init() {
+  private async init() {
+    await this.initOPFS()
+    await this.loadHistory()
     this.render()
     this.setupEventListeners()
   }
@@ -49,11 +60,56 @@ class QRScannerApp {
 
           <div id="result-container" class="mt-6 hidden">
             <h3 class="text-lg font-semibold text-gray-800 mb-2">スキャン結果:</h3>
-            <div class="bg-gray-50 p-4 rounded-lg">
-              <p id="result-text" class="text-sm text-gray-700 break-all"></p>
-              <button id="copy-result" class="mt-2 bg-green-500 hover:bg-green-600 text-white text-sm py-1 px-3 rounded transition duration-200">
-                コピー
+            <div class="bg-green-50 border border-green-200 p-4 rounded-lg">
+              <div class="flex items-start">
+                <svg class="w-5 h-5 text-green-500 mt-0.5 mr-3 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20">
+                  <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clip-rule="evenodd"></path>
+                </svg>
+                <div class="flex-1">
+                  <p id="result-text" class="text-sm text-gray-700 break-all font-mono bg-white p-2 rounded border"></p>
+                  <div class="mt-2 flex gap-2">
+                    <button id="copy-result" class="bg-green-500 hover:bg-green-600 text-white text-sm py-1 px-3 rounded transition duration-200">
+                      📋 コピー
+                    </button>
+                    <button id="save-result" class="bg-blue-500 hover:bg-blue-600 text-white text-sm py-1 px-3 rounded transition duration-200">
+                      💾 履歴に保存
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- スキャン履歴 -->
+          <div id="history-container" class="mt-6">
+            <div class="bg-white rounded-lg shadow">
+              <button id="history-toggle" class="w-full p-4 text-left flex items-center justify-between hover:bg-gray-50 transition-colors">
+                <div class="flex items-center">
+                  <svg class="w-5 h-5 text-purple-500 mr-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+                  </svg>
+                  <span class="font-semibold text-gray-800">スキャン履歴</span>
+                  <span id="history-count" class="ml-2 text-xs bg-purple-100 text-purple-600 px-2 py-1 rounded-full">0</span>
+                </div>
+                <svg id="history-arrow" class="w-5 h-5 text-gray-400 transition-transform transform" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path>
+                </svg>
               </button>
+              <div id="history-content" class="hidden">
+                <div class="px-4 pb-4">
+                  <div id="history-list" class="space-y-2 max-h-64 overflow-y-auto">
+                    <!-- 履歴アイテムがここに表示される -->
+                  </div>
+                  <div class="mt-3 pt-3 border-t border-gray-200 flex gap-2">
+                    <button id="clear-history" class="text-sm text-red-600 hover:text-red-800 font-medium">
+                      🗑️ 履歴をクリア
+                    </button>
+                    <button id="export-history" class="text-sm text-blue-600 hover:text-blue-800 font-medium ml-auto">
+                      📤 エクスポート
+                    </button>
+                  </div>
+                </div>
+              </div>
             </div>
           </div>
 
@@ -135,12 +191,20 @@ class QRScannerApp {
     const startButton = document.getElementById('start-scan')!
     const stopButton = document.getElementById('stop-scan')!
     const copyButton = document.getElementById('copy-result')!
+    const saveButton = document.getElementById('save-result')!
     const privacyToggle = document.getElementById('privacy-toggle')!
+    const historyToggle = document.getElementById('history-toggle')!
+    const clearHistory = document.getElementById('clear-history')!
+    const exportHistory = document.getElementById('export-history')!
 
     startButton.addEventListener('click', () => this.startScanning())
     stopButton.addEventListener('click', () => this.stopScanning())
     copyButton.addEventListener('click', () => this.copyResult())
+    saveButton.addEventListener('click', () => this.saveCurrentResult())
     privacyToggle.addEventListener('click', () => this.togglePrivacy())
+    historyToggle.addEventListener('click', () => this.toggleHistory())
+    clearHistory.addEventListener('click', () => this.clearHistory())
+    exportHistory.addEventListener('click', () => this.exportHistory())
   }
 
   private togglePrivacy() {
@@ -160,6 +224,9 @@ class QRScannerApp {
 
   private async startScanning() {
     try {
+      // 前回の結果をクリア
+      this.clearCurrentResult()
+      
       this.videoElement = document.getElementById('qr-video') as HTMLVideoElement
       
       this.scanner = new QrScanner(
@@ -262,6 +329,223 @@ class QRScannerApp {
   private hideError() {
     document.getElementById('error-container')!.classList.add('hidden')
   }
+
+  // OPFS関連メソッド
+  private async initOPFS() {
+    try {
+      if ('navigator' in globalThis && 'storage' in navigator && 'getDirectory' in navigator.storage) {
+        this.opfsRoot = await navigator.storage.getDirectory()
+      }
+    } catch (error) {
+      console.warn('OPFS not supported:', error)
+    }
+  }
+
+  private async loadHistory() {
+    if (!this.opfsRoot) return
+
+    try {
+      const fileHandle = await this.opfsRoot.getFileHandle('qr-history.json', { create: true })
+      const file = await fileHandle.getFile()
+      
+      if (file.size > 0) {
+        const text = await file.text()
+        this.scanHistory = JSON.parse(text)
+      }
+    } catch (error) {
+      console.warn('Failed to load history:', error)
+      this.scanHistory = []
+    }
+    
+    this.updateHistoryUI()
+  }
+
+  private async saveHistory() {
+    if (!this.opfsRoot) return
+
+    try {
+      const fileHandle = await this.opfsRoot.getFileHandle('qr-history.json', { create: true })
+      const writable = await fileHandle.createWritable()
+      await writable.write(JSON.stringify(this.scanHistory, null, 2))
+      await writable.close()
+    } catch (error) {
+      console.warn('Failed to save history:', error)
+    }
+  }
+
+  // 結果クリア機能
+  private clearCurrentResult() {
+    document.getElementById('result-container')!.classList.add('hidden')
+    document.getElementById('result-text')!.textContent = ''
+  }
+
+  // 履歴保存機能
+  private async saveCurrentResult() {
+    const resultText = document.getElementById('result-text')!.textContent
+    if (!resultText) return
+
+    const historyItem: ScanHistoryItem = {
+      id: Date.now().toString(),
+      data: resultText,
+      timestamp: Date.now(),
+      type: this.detectQRType(resultText)
+    }
+
+    this.scanHistory.unshift(historyItem)
+    
+    // 最大100件まで
+    if (this.scanHistory.length > 100) {
+      this.scanHistory = this.scanHistory.slice(0, 100)
+    }
+
+    await this.saveHistory()
+    this.updateHistoryUI()
+
+    // 保存完了メッセージ
+    const button = document.getElementById('save-result')!
+    const originalText = button.textContent
+    button.textContent = '✅ 保存完了'
+    setTimeout(() => {
+      button.textContent = originalText
+    }, 2000)
+  }
+
+  private detectQRType(data: string): string {
+    if (data.startsWith('http://') || data.startsWith('https://')) return 'URL'
+    if (data.startsWith('mailto:')) return 'Email'
+    if (data.startsWith('tel:')) return 'Phone'
+    if (data.startsWith('wifi:')) return 'WiFi'
+    if (data.includes('@') && data.includes('.')) return 'Email'
+    return 'Text'
+  }
+
+  // 履歴UI操作
+  private toggleHistory() {
+    const content = document.getElementById('history-content')!
+    const arrow = document.getElementById('history-arrow')!
+    
+    const isHidden = content.classList.contains('hidden')
+    
+    if (isHidden) {
+      content.classList.remove('hidden')
+      arrow.classList.add('rotate-180')
+    } else {
+      content.classList.add('hidden')
+      arrow.classList.remove('rotate-180')
+    }
+  }
+
+  private updateHistoryUI() {
+    const historyList = document.getElementById('history-list')!
+    const historyCount = document.getElementById('history-count')!
+    
+    historyCount.textContent = this.scanHistory.length.toString()
+    
+    if (this.scanHistory.length === 0) {
+      historyList.innerHTML = '<p class="text-sm text-gray-500 text-center py-4">履歴はありません</p>'
+      return
+    }
+
+    historyList.innerHTML = this.scanHistory.map(item => {
+      const date = new Date(item.timestamp).toLocaleDateString('ja-JP', {
+        month: 'short',
+        day: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit'
+      })
+      
+      const typeIcon = this.getTypeIcon(item.type)
+      const preview = item.data.length > 50 ? item.data.substring(0, 50) + '...' : item.data
+      
+      return `
+        <div class="flex items-start p-2 bg-gray-50 rounded border hover:bg-gray-100 transition-colors cursor-pointer" onclick="window.qrApp.copyHistoryItem('${item.id}')">
+          <span class="text-lg mr-2 flex-shrink-0">${typeIcon}</span>
+          <div class="flex-1 min-w-0">
+            <p class="text-xs text-gray-500 mb-1">${date} • ${item.type}</p>
+            <p class="text-sm text-gray-700 break-all font-mono">${preview}</p>
+          </div>
+          <button class="ml-2 text-gray-400 hover:text-red-600 flex-shrink-0" onclick="event.stopPropagation(); window.qrApp.deleteHistoryItem('${item.id}')">
+            🗑️
+          </button>
+        </div>
+      `
+    }).join('')
+  }
+
+  private getTypeIcon(type: string): string {
+    switch (type) {
+      case 'URL': return '🔗'
+      case 'Email': return '📧'
+      case 'Phone': return '📞'
+      case 'WiFi': return '📶'
+      default: return '📄'
+    }
+  }
+
+  public async copyHistoryItem(id: string) {
+    const item = this.scanHistory.find(h => h.id === id)
+    if (!item) return
+
+    try {
+      await navigator.clipboard.writeText(item.data)
+      // 一時的にフィードバック表示
+      const element = document.querySelector(`[onclick*="${id}"]`) as HTMLElement
+      if (element) {
+        const original = element.style.backgroundColor
+        element.style.backgroundColor = '#dcfce7'
+        setTimeout(() => {
+          element.style.backgroundColor = original
+        }, 1000)
+      }
+    } catch (error) {
+      console.error('Copy failed:', error)
+    }
+  }
+
+  public async deleteHistoryItem(id: string) {
+    this.scanHistory = this.scanHistory.filter(h => h.id !== id)
+    await this.saveHistory()
+    this.updateHistoryUI()
+  }
+
+  private async clearHistory() {
+    if (confirm('すべての履歴を削除しますか？この操作は取り消せません。')) {
+      this.scanHistory = []
+      await this.saveHistory()
+      this.updateHistoryUI()
+    }
+  }
+
+  private exportHistory() {
+    if (this.scanHistory.length === 0) {
+      alert('履歴がありません')
+      return
+    }
+
+    const csvContent = [
+      'Timestamp,Type,Data',
+      ...this.scanHistory.map(item => {
+        const date = new Date(item.timestamp).toISOString()
+        const escapedData = `"${item.data.replace(/"/g, '""')}"`
+        return `${date},${item.type},${escapedData}`
+      })
+    ].join('\n')
+
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' })
+    const link = document.createElement('a')
+    link.href = URL.createObjectURL(blob)
+    link.download = `qr-scan-history-${new Date().toISOString().split('T')[0]}.csv`
+    link.click()
+    URL.revokeObjectURL(link.href)
+  }
 }
 
-new QRScannerApp()
+// グローバルアクセス用
+declare global {
+  interface Window {
+    qrApp: QRScannerApp
+  }
+}
+
+const app = new QRScannerApp()
+window.qrApp = app
