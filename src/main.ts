@@ -8,6 +8,15 @@ interface ScanHistoryItem {
   type: string
 }
 
+// ストレージの種類を定義
+type StorageType = 'opfs' | 'localStorage' | 'none'
+
+interface StorageStatus {
+  type: StorageType
+  available: boolean
+  error?: string
+}
+
 class QRScannerApp {
   private scanner: QrScanner | null = null
   private videoElement: HTMLVideoElement | null = null
@@ -15,9 +24,10 @@ class QRScannerApp {
   private scanHistory: ScanHistoryItem[] = []
   private opfsRoot: FileSystemDirectoryHandle | null = null
   private deferredPrompt: any = null
-  private currentZoom = 1
-  private mediaStream: MediaStream | null = null
+  private currentZoom = 1 // ズーム機能で使用
+  private mediaStream: MediaStream | null = null // カメラストリーム管理で使用
   private visualZoom = 1
+  private storageStatus: StorageStatus = { type: 'none', available: false }
 
   constructor() {
     this.init()
@@ -32,8 +42,9 @@ class QRScannerApp {
   }
 
   private async initializeAsync() {
-    await this.initOPFS()
+    await this.initStorage()
     await this.loadHistory()
+    this.updateStorageStatusUI()
   }
 
   private render() {
@@ -127,13 +138,18 @@ class QRScannerApp {
                   <div id="history-list-mobile" class="space-y-2 max-h-80 overflow-y-auto">
                     <!-- 履歴アイテムがここに表示される -->
                   </div>
-                  <div class="mt-3 pt-3 border-t border-gray-200 flex gap-2">
-                    <button id="clear-history-mobile" class="text-sm text-red-600 hover:text-red-800 font-medium">
-                      🗑️ 履歴をクリア
-                    </button>
-                    <button id="export-history-mobile" class="text-sm text-blue-600 hover:text-blue-800 font-medium ml-auto">
-                      📤 エクスポート
-                    </button>
+                  <div class="mt-3 pt-3 border-t border-gray-200">
+                    <div class="flex gap-2 mb-2">
+                      <button id="clear-history-mobile" class="text-sm text-red-600 hover:text-red-800 font-medium">
+                        🗑️ 履歴をクリア
+                      </button>
+                      <button id="export-history-mobile" class="text-sm text-blue-600 hover:text-blue-800 font-medium ml-auto">
+                        📤 エクスポート
+                      </button>
+                    </div>
+                    <div id="storage-status-mobile" class="text-xs text-gray-500">
+                      ストレージ: 確認中...
+                    </div>
                   </div>
                 </div>
               </div>
@@ -176,13 +192,18 @@ class QRScannerApp {
                   <div id="history-list" class="space-y-2 max-h-80 lg:max-h-64 overflow-y-auto">
                     <!-- 履歴アイテムがここに表示される -->
                   </div>
-                  <div class="mt-3 pt-3 border-t border-gray-200 flex gap-2">
-                    <button id="clear-history" class="text-sm text-red-600 hover:text-red-800 font-medium">
-                      🗑️ 履歴をクリア
-                    </button>
-                    <button id="export-history" class="text-sm text-blue-600 hover:text-blue-800 font-medium ml-auto">
-                      📤 エクスポート
-                    </button>
+                  <div class="mt-3 pt-3 border-t border-gray-200">
+                    <div class="flex gap-2 mb-2">
+                      <button id="clear-history" class="text-sm text-red-600 hover:text-red-800 font-medium">
+                        🗑️ 履歴をクリア
+                      </button>
+                      <button id="export-history" class="text-sm text-blue-600 hover:text-blue-800 font-medium ml-auto">
+                        📤 エクスポート
+                      </button>
+                    </div>
+                    <div id="storage-status" class="text-xs text-gray-500">
+                      ストレージ: 確認中...
+                    </div>
                   </div>
                 </div>
               </div>
@@ -363,6 +384,9 @@ class QRScannerApp {
       
       // MediaStreamを取得してズーム機能を有効化
       this.mediaStream = this.videoElement.srcObject as MediaStream
+      
+      // ズーム状態をリセット
+      this.currentZoom = 1
       this.hideError()
       
     } catch (error) {
@@ -461,46 +485,307 @@ class QRScannerApp {
     document.getElementById('error-container')!.classList.add('hidden')
   }
 
-  // OPFS関連メソッド
-  private async initOPFS() {
-    try {
-      if ('navigator' in globalThis && 'storage' in navigator && 'getDirectory' in navigator.storage) {
+  // ストレージ初期化メソッド
+  private async initStorage() {
+    // OPFS の利用可能性をチェック
+    if (await this.checkOPFSSupport()) {
+      try {
         this.opfsRoot = await navigator.storage.getDirectory()
+        this.storageStatus = { type: 'opfs', available: true }
+        console.log('OPFS initialized successfully')
+        return
+      } catch (error) {
+        console.warn('OPFS initialization failed:', error)
+        this.storageStatus = { 
+          type: 'opfs', 
+          available: false, 
+          error: error instanceof Error ? error.message : String(error)
+        }
       }
+    }
+
+    // OPFS が使用できない場合は localStorage をチェック
+    if (this.checkLocalStorageSupport()) {
+      this.storageStatus = { type: 'localStorage', available: true }
+      console.log('Using localStorage as fallback')
+      return
+    }
+
+    // どちらも使用できない場合
+    this.storageStatus = { type: 'none', available: false, error: 'No storage available' }
+    console.warn('No storage method available')
+    this.showStorageWarning()
+  }
+
+  private async checkOPFSSupport(): Promise<boolean> {
+    try {
+      // 基本的な OPFS API の存在確認
+      if (!('navigator' in globalThis) || 
+          !('storage' in navigator) || 
+          !('getDirectory' in navigator.storage)) {
+        return false
+      }
+
+      // 実際にアクセスして動作確認（Safari等の部分サポート対応）
+      const testRoot = await navigator.storage.getDirectory()
+      const testFile = await testRoot.getFileHandle('opfs-test.tmp', { create: true })
+      
+      // Safari では createWritable がサポートされていない場合がある
+      const writable = await testFile.createWritable()
+      await writable.write('test')
+      await writable.close()
+      
+      // テストファイルを削除
+      await testRoot.removeEntry('opfs-test.tmp')
+      
+      return true
     } catch (error) {
-      console.warn('OPFS not supported:', error)
+      console.warn('OPFS support check failed:', error)
+      return false
     }
   }
 
+  private checkLocalStorageSupport(): boolean {
+    try {
+      const testKey = 'qr-scanner-test'
+      localStorage.setItem(testKey, 'test')
+      localStorage.removeItem(testKey)
+      return true
+    } catch (error) {
+      console.warn('localStorage not available:', error)
+      return false
+    }
+  }
+
+  private showStorageWarning() {
+    // ストレージが使用できない旨をユーザーに通知
+    const warningElement = document.createElement('div')
+    warningElement.className = 'fixed top-4 left-1/2 transform -translate-x-1/2 bg-yellow-50 border border-yellow-200 rounded-lg p-3 shadow-lg z-50'
+    warningElement.innerHTML = `
+      <div class="flex items-center">
+        <svg class="w-5 h-5 text-yellow-400 mr-3" fill="currentColor" viewBox="0 0 20 20">
+          <path fill-rule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clip-rule="evenodd"></path>
+        </svg>
+        <div>
+          <p class="text-sm text-yellow-800 font-medium">履歴機能が制限されています</p>
+          <p class="text-xs text-yellow-600">ブラウザがファイルストレージをサポートしていません</p>
+        </div>
+      </div>
+    `
+    
+    document.body.appendChild(warningElement)
+    
+    // 10秒後に自動的に削除
+    setTimeout(() => {
+      if (warningElement.parentNode) {
+        warningElement.parentNode.removeChild(warningElement)
+      }
+    }, 10000)
+  }
+
   private async loadHistory() {
-    if (!this.opfsRoot) return
+    if (!this.storageStatus.available) {
+      this.scanHistory = []
+      this.updateHistoryUI()
+      return
+    }
 
     try {
-      const fileHandle = await this.opfsRoot.getFileHandle('qr-history.json', { create: true })
-      const file = await fileHandle.getFile()
+      if (this.storageStatus.type === 'opfs' && this.opfsRoot) {
+        await this.loadHistoryFromOPFS()
+      } else if (this.storageStatus.type === 'localStorage') {
+        this.loadHistoryFromLocalStorage()
+      }
       
-      if (file.size > 0) {
-        const text = await file.text()
-        this.scanHistory = JSON.parse(text)
+      // 履歴が空の場合はバックアップから復旧を試行
+      if (this.scanHistory.length === 0) {
+        const restored = await this.restoreFromBackup()
+        if (restored) {
+          this.showAutoSaveNotification('バックアップから履歴を復旧しました')
+        }
       }
     } catch (error) {
       console.warn('Failed to load history:', error)
       this.scanHistory = []
+      this.showStorageError('履歴の読み込みに失敗しました')
+      
+      // エラーの場合もバックアップからの復旧を試行
+      await this.restoreFromBackup()
     }
     
     this.updateHistoryUI()
   }
 
+  private async loadHistoryFromOPFS() {
+    if (!this.opfsRoot) throw new Error('OPFS root not available')
+
+    const fileHandle = await this.opfsRoot.getFileHandle('qr-history.json', { create: true })
+    const file = await fileHandle.getFile()
+    
+    if (file.size > 0) {
+      const text = await file.text()
+      const parsed = JSON.parse(text)
+      
+      // データの整合性チェック
+      if (Array.isArray(parsed) && this.validateHistoryData(parsed)) {
+        this.scanHistory = parsed
+      } else {
+        console.warn('Invalid history data format, resetting...')
+        this.scanHistory = []
+        await this.saveHistory() // 無効なデータをクリア
+      }
+    } else {
+      this.scanHistory = []
+    }
+  }
+
+  private loadHistoryFromLocalStorage() {
+    const stored = localStorage.getItem('qr-scanner-history')
+    if (stored) {
+      const parsed = JSON.parse(stored)
+      if (Array.isArray(parsed) && this.validateHistoryData(parsed)) {
+        this.scanHistory = parsed
+      } else {
+        console.warn('Invalid localStorage history data, resetting...')
+        this.scanHistory = []
+        localStorage.removeItem('qr-scanner-history')
+      }
+    } else {
+      this.scanHistory = []
+    }
+  }
+
+  private validateHistoryData(data: any[]): boolean {
+    return data.every(item => 
+      typeof item === 'object' &&
+      typeof item.id === 'string' &&
+      typeof item.data === 'string' &&
+      typeof item.timestamp === 'number' &&
+      typeof item.type === 'string'
+    )
+  }
+
   private async saveHistory() {
-    if (!this.opfsRoot) return
+    if (!this.storageStatus.available) {
+      console.warn('No storage available for saving history')
+      return
+    }
 
     try {
-      const fileHandle = await this.opfsRoot.getFileHandle('qr-history.json', { create: true })
-      const writable = await fileHandle.createWritable()
+      if (this.storageStatus.type === 'opfs' && this.opfsRoot) {
+        await this.saveHistoryToOPFS()
+      } else if (this.storageStatus.type === 'localStorage') {
+        this.saveHistoryToLocalStorage()
+      }
+    } catch (error) {
+      console.warn('Failed to save history:', error)
+      this.showStorageError('履歴の保存に失敗しました')
+      
+      // OPFS で失敗した場合は localStorage にフォールバック
+      if (this.storageStatus.type === 'opfs' && this.checkLocalStorageSupport()) {
+        console.log('Falling back to localStorage for history saving')
+        try {
+          this.saveHistoryToLocalStorage()
+          this.storageStatus = { type: 'localStorage', available: true }
+        } catch (fallbackError) {
+          console.error('Fallback to localStorage also failed:', fallbackError)
+        }
+      }
+    }
+  }
+
+  private async saveHistoryToOPFS() {
+    if (!this.opfsRoot) throw new Error('OPFS root not available')
+
+    const fileHandle = await this.opfsRoot.getFileHandle('qr-history.json', { create: true })
+    const writable = await fileHandle.createWritable()
+    
+    try {
       await writable.write(JSON.stringify(this.scanHistory, null, 2))
       await writable.close()
     } catch (error) {
-      console.warn('Failed to save history:', error)
+      // 書き込みエラーの場合はストリームを確実に閉じる
+      try {
+        await writable.abort()
+      } catch (abortError) {
+        console.warn('Failed to abort writable stream:', abortError)
+      }
+      throw error
+    }
+  }
+
+  private saveHistoryToLocalStorage() {
+    const data = JSON.stringify(this.scanHistory)
+    
+    // localStorage の容量制限チェック
+    try {
+      localStorage.setItem('qr-scanner-history', data)
+    } catch (error) {
+      if (error instanceof DOMException && error.name === 'QuotaExceededError') {
+        // 容量不足の場合は古い履歴を削除して再試行
+        console.warn('localStorage quota exceeded, reducing history size')
+        this.scanHistory = this.scanHistory.slice(0, 50) // 最新50件のみ保持
+        localStorage.setItem('qr-scanner-history', JSON.stringify(this.scanHistory))
+        this.showStorageError('ストレージ容量不足のため、古い履歴を削除しました')
+      } else {
+        throw error
+      }
+    }
+  }
+
+  private showStorageError(message: string) {
+    const errorElement = document.createElement('div')
+    errorElement.className = 'fixed bottom-4 right-4 bg-red-50 border border-red-200 rounded-lg p-3 shadow-lg z-50 max-w-sm'
+    errorElement.innerHTML = `
+      <div class="flex items-start">
+        <svg class="w-5 h-5 text-red-400 mt-0.5 mr-3 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20">
+          <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clip-rule="evenodd"></path>
+        </svg>
+        <div>
+          <p class="text-sm text-red-800 font-medium">ストレージエラー</p>
+          <p class="text-xs text-red-600">${message}</p>
+        </div>
+      </div>
+    `
+    
+    document.body.appendChild(errorElement)
+    
+    // 5秒後に自動的に削除
+    setTimeout(() => {
+      if (errorElement.parentNode) {
+        errorElement.parentNode.removeChild(errorElement)
+      }
+    }, 5000)
+  }
+
+  private updateStorageStatusUI() {
+    const statusElement = document.getElementById('storage-status')
+    const statusElementMobile = document.getElementById('storage-status-mobile')
+    
+    let statusText = ''
+    let statusClass = 'text-gray-500'
+    
+    if (this.storageStatus.available) {
+      if (this.storageStatus.type === 'opfs') {
+        statusText = 'ストレージ: OPFS (高性能)'
+        statusClass = 'text-green-600'
+      } else if (this.storageStatus.type === 'localStorage') {
+        statusText = 'ストレージ: localStorage (互換性)'
+        statusClass = 'text-blue-600'
+      }
+    } else {
+      statusText = 'ストレージ: 利用不可'
+      statusClass = 'text-red-600'
+    }
+    
+    if (statusElement) {
+      statusElement.textContent = statusText
+      statusElement.className = `text-xs ${statusClass}`
+    }
+    
+    if (statusElementMobile) {
+      statusElementMobile.textContent = statusText
+      statusElementMobile.className = `text-xs ${statusClass}`
     }
   }
 
@@ -538,15 +823,94 @@ class QRScannerApp {
     }
 
     await this.saveHistory()
+    
+    // クロスストレージバックアップ
+    await this.createBackup()
+    
     this.updateHistoryUI()
 
     // 自動保存完了の視覚的フィードバック
     this.showAutoSaveNotification()
   }
 
+  // データバックアップ機能（異なるストレージ間でのバックアップ）
+  private async createBackup() {
+    if (!this.storageStatus.available || this.scanHistory.length === 0) return
+
+    try {
+      // OPFSを使っている場合はlocalStorageにバックアップ
+      if (this.storageStatus.type === 'opfs' && this.checkLocalStorageSupport()) {
+        const backupData = {
+          timestamp: Date.now(),
+          version: '1.0',
+          history: this.scanHistory.slice(0, 50) // 最新50件のみバックアップ
+        }
+        localStorage.setItem('qr-scanner-backup', JSON.stringify(backupData))
+      }
+      // localStorageを使っている場合はSessionStorageにバックアップ（一時的）
+      else if (this.storageStatus.type === 'localStorage' && this.checkSessionStorageSupport()) {
+        const backupData = {
+          timestamp: Date.now(),
+          version: '1.0', 
+          history: this.scanHistory.slice(0, 30) // セッション用は少なめ
+        }
+        sessionStorage.setItem('qr-scanner-session-backup', JSON.stringify(backupData))
+      }
+    } catch (error) {
+      console.warn('Backup creation failed:', error)
+    }
+  }
+
+  private checkSessionStorageSupport(): boolean {
+    try {
+      const testKey = 'qr-scanner-session-test'
+      sessionStorage.setItem(testKey, 'test')
+      sessionStorage.removeItem(testKey)
+      return true
+    } catch (error) {
+      return false
+    }
+  }
+
+  // バックアップからの復旧機能
+  private async restoreFromBackup(): Promise<boolean> {
+    try {
+      // まずlocalStorageのバックアップをチェック
+      const backupData = localStorage.getItem('qr-scanner-backup')
+      if (backupData) {
+        const parsed = JSON.parse(backupData)
+        if (parsed.history && Array.isArray(parsed.history) && this.validateHistoryData(parsed.history)) {
+          // 現在の履歴が空の場合のみ復旧
+          if (this.scanHistory.length === 0) {
+            this.scanHistory = parsed.history
+            await this.saveHistory()
+            console.log('History restored from backup')
+            return true
+          }
+        }
+      }
+      
+      // SessionStorageからの復旧も試行
+      const sessionBackup = sessionStorage.getItem('qr-scanner-session-backup')
+      if (sessionBackup && this.scanHistory.length === 0) {
+        const parsed = JSON.parse(sessionBackup)
+        if (parsed.history && Array.isArray(parsed.history) && this.validateHistoryData(parsed.history)) {
+          this.scanHistory = parsed.history
+          await this.saveHistory()
+          console.log('History restored from session backup')
+          return true
+        }
+      }
+    } catch (error) {
+      console.warn('Backup restoration failed:', error)
+    }
+    
+    return false
+  }
+
 
   // 自動保存通知の表示
-  private showAutoSaveNotification() {
+  private showAutoSaveNotification(message: string = '履歴に自動保存されました') {
     const resultContainer = document.getElementById('result-container')
     if (!resultContainer) return
 
@@ -563,7 +927,7 @@ class QRScannerApp {
       <svg class="w-4 h-4 mr-1" fill="currentColor" viewBox="0 0 20 20">
         <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clip-rule="evenodd"></path>
       </svg>
-      履歴に自動保存されました
+      ${message}
     `
 
     resultContainer.appendChild(notification)
@@ -715,6 +1079,18 @@ class QRScannerApp {
   private async clearHistory() {
     if (confirm('すべての履歴を削除しますか？この操作は取り消せません。')) {
       this.scanHistory = []
+      
+      // ストレージからも削除
+      try {
+        if (this.storageStatus.type === 'opfs' && this.opfsRoot) {
+          await this.opfsRoot.removeEntry('qr-history.json')
+        } else if (this.storageStatus.type === 'localStorage') {
+          localStorage.removeItem('qr-scanner-history')
+        }
+      } catch (error) {
+        console.warn('Failed to clear storage:', error)
+      }
+      
       await this.saveHistory()
       this.updateHistoryUI()
     }
