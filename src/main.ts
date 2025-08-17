@@ -173,8 +173,8 @@ class QRScannerApp {
           
           <!-- 右カラム: 履歴と情報 -->
           <div class="lg:w-1/2 mt-6 lg:mt-0 space-y-4">
-            <!-- スキャン履歴 (デスクトップでは右カラムに移動) -->
-            <div class="bg-white rounded-lg shadow-lg">
+            <!-- スキャン履歴 (デスクトップ専用・lg以下では非表示) -->
+            <div class="hidden lg:block bg-white rounded-lg shadow-lg">
               <button id="history-toggle" class="w-full p-4 text-left flex items-center justify-between hover:bg-gray-50 transition-colors">
                 <div class="flex items-center">
                   <svg class="w-5 h-5 text-purple-500 mr-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -187,7 +187,7 @@ class QRScannerApp {
                   <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path>
                 </svg>
               </button>
-              <div id="history-content" class="lg:block">
+              <div id="history-content" class="hidden">
                 <div class="px-4 pb-4">
                   <div id="history-list" class="space-y-2 max-h-80 lg:max-h-64 overflow-y-auto">
                     <!-- 履歴アイテムがここに表示される -->
