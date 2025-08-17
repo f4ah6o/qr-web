@@ -14,9 +14,14 @@ class QRScannerApp {
   private isScanning = false
   private scanHistory: ScanHistoryItem[] = []
   private opfsRoot: FileSystemDirectoryHandle | null = null
+  private deferredPrompt: any = null
+  private currentZoom = 1
+  private mediaStream: MediaStream | null = null
+  private visualZoom = 1
 
   constructor() {
     this.init()
+    this.setupPWA()
   }
 
   private init() {
@@ -34,14 +39,34 @@ class QRScannerApp {
   private render() {
     const app = document.querySelector<HTMLDivElement>('#app')!
     app.innerHTML = `
-      <div class="min-h-screen bg-gray-100 flex flex-col items-center p-4">
-        <div class="max-w-md w-full bg-white rounded-lg shadow-lg p-6">
+      <div class="h-screen bg-gray-100 flex flex-col lg:flex-row items-center lg:items-start lg:justify-center p-2 sm:p-4 overflow-y-auto">
+        <div class="max-w-md lg:max-w-6xl w-full lg:flex lg:gap-6">
+          <!-- 左カラム: スキャン機能 -->
+          <div class="lg:w-1/2 bg-white rounded-lg shadow-lg p-6">
           <h1 class="text-2xl font-bold text-gray-800 text-center mb-4">QRコードスキャナー</h1>
           <p class="text-sm text-gray-600 text-center mb-6">カメラでQRコードをかざしてください</p>
           
           <div class="mb-4">
-            <video id="qr-video" class="w-full h-64 bg-gray-200 rounded-lg object-cover hidden"></video>
-            <div id="camera-placeholder" class="w-full h-64 bg-gradient-to-br from-blue-50 to-indigo-100 rounded-lg flex items-center justify-center border-2 border-dashed border-blue-300">
+            <!-- ビデオコンテナ（クロップ用） -->
+            <div id="video-container" class="w-full h-64 landscape:h-40 bg-gray-200 rounded-lg overflow-hidden relative hidden">
+              <video id="qr-video" class="w-full h-full object-cover transform-gpu transition-transform duration-200"></video>
+            </div>
+            <!-- ズームコントロール -->
+            <div id="zoom-controls" class="mt-2 hidden">
+              <div class="flex items-center justify-center space-x-4">
+                <button id="zoom-out" class="bg-gray-500 hover:bg-gray-600 text-white px-3 py-1 rounded text-sm">
+                  🔍➖
+                </button>
+                <span id="zoom-level" class="text-sm text-gray-600 min-w-[60px] text-center">1.0x</span>
+                <button id="zoom-in" class="bg-gray-500 hover:bg-gray-600 text-white px-3 py-1 rounded text-sm">
+                  🔍➕
+                </button>
+              </div>
+              <div class="text-center mt-1">
+                <span class="text-xs text-gray-500">画面拡大（ピンチで調整可能）</span>
+              </div>
+            </div>
+            <div id="camera-placeholder" class="w-full h-64 landscape:h-40 bg-gradient-to-br from-blue-50 to-indigo-100 rounded-lg flex items-center justify-center border-2 border-dashed border-blue-300">
               <div class="text-center">
                 <svg class="mx-auto h-8 w-8 sm:h-12 sm:w-12 text-blue-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                   <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 9a2 2 0 012-2h.93a2 2 0 001.664-.89l.812-1.22A2 2 0 0110.07 4h3.86a2 2 0 011.664.89l.812 1.22A2 2 0 0018.07 7H19a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V9z" />
@@ -82,31 +107,31 @@ class QRScannerApp {
             </div>
           </div>
 
-          <!-- スキャン履歴 -->
-          <div id="history-container" class="mt-6">
+          <!-- モバイル・タブレット縦用の履歴 (lg以上では非表示) -->
+          <div id="history-container" class="mt-6 lg:hidden">
             <div class="bg-white rounded-lg shadow">
-              <button id="history-toggle" class="w-full p-4 text-left flex items-center justify-between hover:bg-gray-50 transition-colors">
+              <button id="history-toggle-mobile" class="w-full p-4 text-left flex items-center justify-between hover:bg-gray-50 transition-colors">
                 <div class="flex items-center">
                   <svg class="w-5 h-5 text-purple-500 mr-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"></path>
                   </svg>
                   <span class="font-semibold text-gray-800">スキャン履歴</span>
-                  <span id="history-count" class="ml-2 text-xs bg-purple-100 text-purple-600 px-2 py-1 rounded-full">0</span>
+                  <span id="history-count-mobile" class="ml-2 text-xs bg-purple-100 text-purple-600 px-2 py-1 rounded-full">0</span>
                 </div>
-                <svg id="history-arrow" class="w-5 h-5 text-gray-400 transition-transform transform" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <svg id="history-arrow-mobile" class="w-5 h-5 text-gray-400 transition-transform transform" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path>
                 </svg>
               </button>
-              <div id="history-content" class="hidden">
+              <div id="history-content-mobile" class="hidden">
                 <div class="px-4 pb-4">
-                  <div id="history-list" class="space-y-2 max-h-80 overflow-y-auto">
+                  <div id="history-list-mobile" class="space-y-2 max-h-80 overflow-y-auto">
                     <!-- 履歴アイテムがここに表示される -->
                   </div>
                   <div class="mt-3 pt-3 border-t border-gray-200 flex gap-2">
-                    <button id="clear-history" class="text-sm text-red-600 hover:text-red-800 font-medium">
+                    <button id="clear-history-mobile" class="text-sm text-red-600 hover:text-red-800 font-medium">
                       🗑️ 履歴をクリア
                     </button>
-                    <button id="export-history" class="text-sm text-blue-600 hover:text-blue-800 font-medium ml-auto">
+                    <button id="export-history-mobile" class="text-sm text-blue-600 hover:text-blue-800 font-medium ml-auto">
                       📤 エクスポート
                     </button>
                   </div>
@@ -128,9 +153,59 @@ class QRScannerApp {
               </div>
             </div>
           </div>
-        </div>
+          </div>
+          
+          <!-- 右カラム: 履歴と情報 -->
+          <div class="lg:w-1/2 mt-6 lg:mt-0 space-y-4">
+            <!-- スキャン履歴 (デスクトップでは右カラムに移動) -->
+            <div class="bg-white rounded-lg shadow-lg">
+              <button id="history-toggle" class="w-full p-4 text-left flex items-center justify-between hover:bg-gray-50 transition-colors">
+                <div class="flex items-center">
+                  <svg class="w-5 h-5 text-purple-500 mr-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+                  </svg>
+                  <span class="font-semibold text-gray-800">スキャン履歴</span>
+                  <span id="history-count" class="ml-2 text-xs bg-purple-100 text-purple-600 px-2 py-1 rounded-full">0</span>
+                </div>
+                <svg id="history-arrow" class="w-5 h-5 text-gray-400 transition-transform transform" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path>
+                </svg>
+              </button>
+              <div id="history-content" class="lg:block">
+                <div class="px-4 pb-4">
+                  <div id="history-list" class="space-y-2 max-h-80 lg:max-h-64 overflow-y-auto">
+                    <!-- 履歴アイテムがここに表示される -->
+                  </div>
+                  <div class="mt-3 pt-3 border-t border-gray-200 flex gap-2">
+                    <button id="clear-history" class="text-sm text-red-600 hover:text-red-800 font-medium">
+                      🗑️ 履歴をクリア
+                    </button>
+                    <button id="export-history" class="text-sm text-blue-600 hover:text-blue-800 font-medium ml-auto">
+                      📤 エクスポート
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
 
-        <div class="mt-8 max-w-md w-full space-y-4">
+            <!-- PWAインストール -->
+            <div id="pwa-install" class="bg-blue-50 border border-blue-200 rounded-lg p-4 hidden">
+              <div class="flex items-start">
+                <svg class="w-5 h-5 text-blue-500 mt-0.5 mr-3 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 18h.01M8 21h8a2 2 0 002-2V5a2 2 0 00-2-2H8a2 2 0 00-2 2v14a2 2 0 002 2z"></path>
+                </svg>
+                <div class="flex-1">
+                  <h3 class="text-sm font-semibold text-blue-800 mb-2">アプリをインストール</h3>
+                  <p class="text-xs text-blue-700 mb-3">ホーム画面に追加してネイティブアプリのように使用できます</p>
+                  <button id="install-button" class="bg-blue-500 hover:bg-blue-600 text-white text-xs py-2 px-3 rounded transition duration-200">
+                    📱 インストール
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            <!-- 免責事項・プライバシー情報 -->
+            <div class="space-y-4">
           <!-- 免責事項 -->
           <div class="bg-red-50 border border-red-200 rounded-lg p-4">
             <div class="flex items-start">
@@ -184,6 +259,7 @@ class QRScannerApp {
               </a>
             </div>
           </div>
+          </div>
         </div>
       </div>
     `
@@ -194,17 +270,45 @@ class QRScannerApp {
     const stopButton = document.getElementById('stop-scan')!
     const copyButton = document.getElementById('copy-result')!
     const privacyToggle = document.getElementById('privacy-toggle')!
+    
+    // デスクトップ用履歴ボタン
     const historyToggle = document.getElementById('history-toggle')!
     const clearHistory = document.getElementById('clear-history')!
     const exportHistory = document.getElementById('export-history')!
+    
+    // モバイル用履歴ボタン
+    const historyToggleMobile = document.getElementById('history-toggle-mobile')!
+    const clearHistoryMobile = document.getElementById('clear-history-mobile')!
+    const exportHistoryMobile = document.getElementById('export-history-mobile')!
 
     startButton.addEventListener('click', () => this.startScanning())
     stopButton.addEventListener('click', () => this.stopScanning())
     copyButton.addEventListener('click', () => this.copyResult())
     privacyToggle.addEventListener('click', () => this.togglePrivacy())
+    
+    // デスクトップ用履歴イベント
     historyToggle.addEventListener('click', () => this.toggleHistory())
     clearHistory.addEventListener('click', () => this.clearHistory())
     exportHistory.addEventListener('click', () => this.exportHistory())
+    
+    // モバイル用履歴イベント
+    historyToggleMobile.addEventListener('click', () => this.toggleHistoryMobile())
+    clearHistoryMobile.addEventListener('click', () => this.clearHistory())
+    exportHistoryMobile.addEventListener('click', () => this.exportHistory())
+    
+    // PWAインストールボタン
+    const installButton = document.getElementById('install-button')
+    if (installButton) {
+      installButton.addEventListener('click', () => this.installPWA())
+    }
+    
+    // ズームコントロール
+    const zoomInButton = document.getElementById('zoom-in')
+    const zoomOutButton = document.getElementById('zoom-out')
+    if (zoomInButton && zoomOutButton) {
+      zoomInButton.addEventListener('click', () => this.zoomIn())
+      zoomOutButton.addEventListener('click', () => this.zoomOut())
+    }
   }
 
   private togglePrivacy() {
@@ -240,7 +344,7 @@ class QRScannerApp {
           preferredCamera: 'environment',
           calculateScanRegion: (video) => {
             const smallerDimension = Math.min(video.videoWidth, video.videoHeight)
-            const scanRegionSize = Math.round(0.7 * smallerDimension)
+            const scanRegionSize = Math.round(0.9 * smallerDimension)
             return {
               x: Math.round((video.videoWidth - scanRegionSize) / 2),
               y: Math.round((video.videoHeight - scanRegionSize) / 2),
@@ -256,6 +360,9 @@ class QRScannerApp {
       this.updateUI()
       
       await this.scanner.start()
+      
+      // MediaStreamを取得してズーム機能を有効化
+      this.mediaStream = this.videoElement.srcObject as MediaStream
       this.hideError()
       
     } catch (error) {
@@ -277,6 +384,9 @@ class QRScannerApp {
       this.scanner.destroy()
       this.scanner = null
     }
+    this.mediaStream = null
+    this.currentZoom = 1
+    this.visualZoom = 1
     this.isScanning = false
     this.updateUI()
   }
@@ -321,19 +431,24 @@ class QRScannerApp {
   private updateUI() {
     const startButton = document.getElementById('start-scan')!
     const stopButton = document.getElementById('stop-scan')!
-    const videoElement = document.getElementById('qr-video')!
+    const videoContainer = document.getElementById('video-container')!
     const placeholder = document.getElementById('camera-placeholder')!
+    const zoomControls = document.getElementById('zoom-controls')!
 
     if (this.isScanning) {
       startButton.classList.add('hidden')
       stopButton.classList.remove('hidden')
-      videoElement.classList.remove('hidden')
+      videoContainer.classList.remove('hidden')
       placeholder.classList.add('hidden')
+      zoomControls.classList.remove('hidden')
+      this.updateZoomLevel()
+      this.setupTouchEvents()
     } else {
       startButton.classList.remove('hidden')
       stopButton.classList.add('hidden')
-      videoElement.classList.add('hidden')
+      videoContainer.classList.add('hidden')
       placeholder.classList.remove('hidden')
+      zoomControls.classList.add('hidden')
     }
   }
 
@@ -468,7 +583,7 @@ class QRScannerApp {
     return 'Text'
   }
 
-  // 履歴UI操作
+  // 履歴UI操作（デスクトップ用）
   private toggleHistory() {
     const content = document.getElementById('history-content')!
     const arrow = document.getElementById('history-arrow')!
@@ -484,48 +599,81 @@ class QRScannerApp {
     }
   }
 
+  // 履歴UI操作（モバイル用）
+  private toggleHistoryMobile() {
+    const content = document.getElementById('history-content-mobile')!
+    const arrow = document.getElementById('history-arrow-mobile')!
+    
+    const isHidden = content.classList.contains('hidden')
+    
+    if (isHidden) {
+      content.classList.remove('hidden')
+      arrow.classList.add('rotate-180')
+    } else {
+      content.classList.add('hidden')
+      arrow.classList.remove('rotate-180')
+    }
+  }
+
   private updateHistoryUI() {
+    // デスクトップ用履歴
     const historyList = document.getElementById('history-list')
     const historyCount = document.getElementById('history-count')
     
-    // 要素が存在しない場合は何もしない（HTML描画前の場合）
-    if (!historyList || !historyCount) return
+    // モバイル用履歴
+    const historyListMobile = document.getElementById('history-list-mobile')
+    const historyCountMobile = document.getElementById('history-count-mobile')
     
-    historyCount.textContent = this.scanHistory.length.toString()
-    
-    if (this.scanHistory.length === 0) {
-      historyList.innerHTML = '<p class="text-sm text-gray-500 text-center py-4">履歴はありません</p>'
-      return
-    }
+    // 履歴コンテンツを生成する共通関数
+    const generateHistoryHTML = () => {
+      if (this.scanHistory.length === 0) {
+        return '<p class="text-sm text-gray-500 text-center py-4">履歴はありません</p>'
+      }
 
-    historyList.innerHTML = this.scanHistory.map(item => {
-      const date = new Date(item.timestamp).toLocaleDateString('ja-JP', {
-        month: 'short',
-        day: 'numeric',
-        hour: '2-digit',
-        minute: '2-digit'
-      })
-      
-      const typeIcon = this.getTypeIcon(item.type)
-      const preview = item.data.length > 50 ? item.data.substring(0, 50) + '...' : item.data
-      const isUrl = item.type === 'URL'
-      
-      return `
-        <div class="flex items-start p-3 bg-gray-50 rounded border hover:bg-gray-100 transition-colors cursor-pointer" onclick="window.qrApp.copyHistoryItem('${item.id}')">
-          <span class="text-lg mr-3 flex-shrink-0">${typeIcon}</span>
-          <div class="flex-1 min-w-0">
-            <p class="text-xs text-gray-500 mb-1">${date} • ${item.type}</p>
-            ${isUrl ? 
-              `<a href="${item.data}" target="_blank" rel="noopener noreferrer" class="text-sm text-blue-600 hover:text-blue-800 underline break-all font-mono" onclick="event.stopPropagation()">${preview}</a>` :
-              `<p class="text-sm text-gray-700 break-all font-mono">${preview}</p>`
-            }
+      return this.scanHistory.map(item => {
+        const date = new Date(item.timestamp).toLocaleDateString('ja-JP', {
+          month: 'short',
+          day: 'numeric',
+          hour: '2-digit',
+          minute: '2-digit'
+        })
+        
+        const typeIcon = this.getTypeIcon(item.type)
+        const preview = item.data.length > 50 ? item.data.substring(0, 50) + '...' : item.data
+        const isUrl = item.type === 'URL'
+        
+        return `
+          <div class="flex items-start p-3 bg-gray-50 rounded border hover:bg-gray-100 transition-colors cursor-pointer" onclick="window.qrApp.copyHistoryItem('${item.id}')">
+            <span class="text-lg mr-3 flex-shrink-0">${typeIcon}</span>
+            <div class="flex-1 min-w-0">
+              <p class="text-xs text-gray-500 mb-1">${date} • ${item.type}</p>
+              ${isUrl ? 
+                `<a href="${item.data}" target="_blank" rel="noopener noreferrer" class="text-sm text-blue-600 hover:text-blue-800 underline break-all font-mono" onclick="event.stopPropagation()">${preview}</a>` :
+                `<p class="text-sm text-gray-700 break-all font-mono">${preview}</p>`
+              }
+            </div>
+            <button class="ml-3 text-gray-400 hover:text-red-600 flex-shrink-0" onclick="event.stopPropagation(); window.qrApp.deleteHistoryItem('${item.id}')">
+              🗑️
+            </button>
           </div>
-          <button class="ml-3 text-gray-400 hover:text-red-600 flex-shrink-0" onclick="event.stopPropagation(); window.qrApp.deleteHistoryItem('${item.id}')">
-            🗑️
-          </button>
-        </div>
-      `
-    }).join('')
+        `
+      }).join('')
+    }
+    
+    const countText = this.scanHistory.length.toString()
+    const historyHTML = generateHistoryHTML()
+    
+    // デスクトップ用履歴を更新
+    if (historyList && historyCount) {
+      historyCount.textContent = countText
+      historyList.innerHTML = historyHTML
+    }
+    
+    // モバイル用履歴を更新
+    if (historyListMobile && historyCountMobile) {
+      historyCountMobile.textContent = countText
+      historyListMobile.innerHTML = historyHTML
+    }
   }
 
   private getTypeIcon(type: string): string {
@@ -593,6 +741,137 @@ class QRScannerApp {
     link.download = `qr-scan-history-${new Date().toISOString().split('T')[0]}.csv`
     link.click()
     URL.revokeObjectURL(link.href)
+  }
+
+  // PWA関連メソッド
+  private setupPWA() {
+    // beforeinstallpromptイベントをキャッチ
+    window.addEventListener('beforeinstallprompt', (e) => {
+      e.preventDefault()
+      this.deferredPrompt = e
+      this.showInstallPrompt()
+    })
+
+    // アプリがインストールされた時
+    window.addEventListener('appinstalled', () => {
+      this.hideInstallPrompt()
+      console.log('PWA was installed')
+    })
+
+    // 既にインストール済みかチェック
+    if (window.matchMedia('(display-mode: standalone)').matches) {
+      this.hideInstallPrompt()
+    }
+  }
+
+  private showInstallPrompt() {
+    const installPrompt = document.getElementById('pwa-install')
+    if (installPrompt) {
+      installPrompt.classList.remove('hidden')
+    }
+  }
+
+  private hideInstallPrompt() {
+    const installPrompt = document.getElementById('pwa-install')
+    if (installPrompt) {
+      installPrompt.classList.add('hidden')
+    }
+  }
+
+  private async installPWA() {
+    if (!this.deferredPrompt) return
+
+    this.deferredPrompt.prompt()
+    const choiceResult = await this.deferredPrompt.userChoice
+    
+    if (choiceResult.outcome === 'accepted') {
+      console.log('User accepted the install prompt')
+    } else {
+      console.log('User dismissed the install prompt')
+    }
+    
+    this.deferredPrompt = null
+    this.hideInstallPrompt()
+  }
+
+  // ズーム機能（視覚的ズーム）
+  private zoomIn() {
+    if (this.visualZoom < 3) {
+      this.visualZoom += 0.5
+      this.applyVisualZoom()
+    }
+  }
+
+  private zoomOut() {
+    if (this.visualZoom > 1) {
+      this.visualZoom -= 0.5
+      this.applyVisualZoom()
+    }
+  }
+
+  private applyVisualZoom() {
+    const videoElement = document.getElementById('qr-video') as HTMLVideoElement
+    if (videoElement) {
+      videoElement.style.transform = `scale(${this.visualZoom})`
+    }
+    this.updateZoomLevel()
+  }
+
+  private updateZoomLevel() {
+    const zoomLevelElement = document.getElementById('zoom-level')
+    if (zoomLevelElement) {
+      zoomLevelElement.textContent = `${this.visualZoom.toFixed(1)}x`
+    }
+  }
+
+  // タッチイベント（ピンチズーム）
+  private setupTouchEvents() {
+    const videoContainer = document.getElementById('video-container')
+    if (!videoContainer) return
+
+    let initialDistance = 0
+    let initialZoom = this.visualZoom
+
+    const getTouchDistance = (touches: TouchList) => {
+      if (touches.length < 2) return 0
+      const touch1 = touches[0]
+      const touch2 = touches[1]
+      return Math.sqrt(
+        Math.pow(touch2.clientX - touch1.clientX, 2) + 
+        Math.pow(touch2.clientY - touch1.clientY, 2)
+      )
+    }
+
+    videoContainer.addEventListener('touchstart', (e) => {
+      if (e.touches.length === 2) {
+        e.preventDefault()
+        initialDistance = getTouchDistance(e.touches)
+        initialZoom = this.visualZoom
+      }
+    })
+
+    videoContainer.addEventListener('touchmove', (e) => {
+      if (e.touches.length === 2) {
+        e.preventDefault()
+        const currentDistance = getTouchDistance(e.touches)
+        if (initialDistance > 0) {
+          const scale = currentDistance / initialDistance
+          let newZoom = initialZoom * scale
+          
+          // ズーム範囲を制限
+          newZoom = Math.max(1, Math.min(3, newZoom))
+          
+          this.visualZoom = Math.round(newZoom * 2) / 2 // 0.5刻みに丸める
+          this.applyVisualZoom()
+        }
+      }
+    })
+
+    videoContainer.addEventListener('touchend', (e) => {
+      if (e.touches.length < 2) {
+        initialDistance = 0
+      }
+    })
   }
 }
 
