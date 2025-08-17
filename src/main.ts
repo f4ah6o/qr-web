@@ -415,13 +415,31 @@ class QRScannerApp {
     this.updateUI()
   }
 
+  private isValidHttpUrl(str: string): boolean {
+    try {
+      const url = new URL(str)
+      return url.protocol === 'http:' || url.protocol === 'https:'
+    } catch (_) {
+      return false
+    }
+  }
+
   private async onScanSuccess(result: string) {
     const resultElement = document.getElementById('result-text')!
     const qrType = this.detectQRType(result)
     
-    // URLの場合はリンク化、それ以外はテキスト表示
-    if (qrType === 'URL') {
-      resultElement.innerHTML = `<a href="${result}" target="_blank" rel="noopener noreferrer" class="text-blue-600 hover:text-blue-800 underline">${result}</a>`
+    // 既存のコンテンツをクリア
+    resultElement.innerHTML = ''
+    
+    // URLの場合はリンク化（セキュアな方法で）、それ以外はテキスト表示
+    if (qrType === 'URL' && this.isValidHttpUrl(result)) {
+      const link = document.createElement('a')
+      link.href = result
+      link.target = '_blank'
+      link.rel = 'noopener noreferrer'
+      link.className = 'text-blue-600 hover:text-blue-800 underline'
+      link.textContent = result
+      resultElement.appendChild(link)
     } else {
       resultElement.textContent = result
     }
@@ -988,13 +1006,20 @@ class QRScannerApp {
     const historyListMobile = document.getElementById('history-list-mobile')
     const historyCountMobile = document.getElementById('history-count-mobile')
     
-    // 履歴コンテンツを生成する共通関数
-    const generateHistoryHTML = () => {
+    // 履歴コンテンツを生成する共通関数（DOM操作）
+    const generateHistoryElements = (container: HTMLElement) => {
+      // 既存のコンテンツをクリア
+      container.innerHTML = ''
+      
       if (this.scanHistory.length === 0) {
-        return '<p class="text-sm text-gray-500 text-center py-4">履歴はありません</p>'
+        const emptyMessage = document.createElement('p')
+        emptyMessage.className = 'text-sm text-gray-500 text-center py-4'
+        emptyMessage.textContent = '履歴はありません'
+        container.appendChild(emptyMessage)
+        return
       }
 
-      return this.scanHistory.map(item => {
+      this.scanHistory.forEach(item => {
         const date = new Date(item.timestamp).toLocaleDateString('ja-JP', {
           month: 'short',
           day: 'numeric',
@@ -1004,39 +1029,75 @@ class QRScannerApp {
         
         const typeIcon = this.getTypeIcon(item.type)
         const preview = item.data.length > 50 ? item.data.substring(0, 50) + '...' : item.data
-        const isUrl = item.type === 'URL'
+        const isUrl = item.type === 'URL' && this.isValidHttpUrl(item.data)
         
-        return `
-          <div class="flex items-start p-3 bg-gray-50 rounded border hover:bg-gray-100 transition-colors cursor-pointer" onclick="window.qrApp.copyHistoryItem('${item.id}')">
-            <span class="text-lg mr-3 flex-shrink-0">${typeIcon}</span>
-            <div class="flex-1 min-w-0">
-              <p class="text-xs text-gray-500 mb-1">${date} • ${item.type}</p>
-              ${isUrl ? 
-                `<a href="${item.data}" target="_blank" rel="noopener noreferrer" class="text-sm text-blue-600 hover:text-blue-800 underline break-all font-mono" onclick="event.stopPropagation()">${preview}</a>` :
-                `<p class="text-sm text-gray-700 break-all font-mono">${preview}</p>`
-              }
-            </div>
-            <button class="ml-3 text-gray-400 hover:text-red-600 flex-shrink-0" onclick="event.stopPropagation(); window.qrApp.deleteHistoryItem('${item.id}')">
-              🗑️
-            </button>
-          </div>
-        `
-      }).join('')
+        // 履歴アイテムコンテナ作成
+        const itemDiv = document.createElement('div')
+        itemDiv.className = 'flex items-start p-3 bg-gray-50 rounded border hover:bg-gray-100 transition-colors cursor-pointer'
+        itemDiv.addEventListener('click', () => this.copyHistoryItem(item.id))
+        
+        // アイコン
+        const iconSpan = document.createElement('span')
+        iconSpan.className = 'text-lg mr-3 flex-shrink-0'
+        iconSpan.textContent = typeIcon
+        
+        // コンテンツエリア
+        const contentDiv = document.createElement('div')
+        contentDiv.className = 'flex-1 min-w-0'
+        
+        // 日付とタイプ
+        const dateP = document.createElement('p')
+        dateP.className = 'text-xs text-gray-500 mb-1'
+        dateP.textContent = `${date} • ${item.type}`
+        
+        // データ表示
+        if (isUrl) {
+          const link = document.createElement('a')
+          link.href = item.data
+          link.target = '_blank'
+          link.rel = 'noopener noreferrer'
+          link.className = 'text-sm text-blue-600 hover:text-blue-800 underline break-all font-mono'
+          link.textContent = preview
+          link.addEventListener('click', (e) => e.stopPropagation())
+          contentDiv.appendChild(dateP)
+          contentDiv.appendChild(link)
+        } else {
+          const dataP = document.createElement('p')
+          dataP.className = 'text-sm text-gray-700 break-all font-mono'
+          dataP.textContent = preview
+          contentDiv.appendChild(dateP)
+          contentDiv.appendChild(dataP)
+        }
+        
+        // 削除ボタン
+        const deleteButton = document.createElement('button')
+        deleteButton.className = 'ml-3 text-gray-400 hover:text-red-600 flex-shrink-0'
+        deleteButton.textContent = '🗑️'
+        deleteButton.addEventListener('click', (e) => {
+          e.stopPropagation()
+          this.deleteHistoryItem(item.id)
+        })
+        
+        // 要素を組み立て
+        itemDiv.appendChild(iconSpan)
+        itemDiv.appendChild(contentDiv)
+        itemDiv.appendChild(deleteButton)
+        container.appendChild(itemDiv)
+      })
     }
     
     const countText = this.scanHistory.length.toString()
-    const historyHTML = generateHistoryHTML()
     
     // デスクトップ用履歴を更新
     if (historyList && historyCount) {
       historyCount.textContent = countText
-      historyList.innerHTML = historyHTML
+      generateHistoryElements(historyList)
     }
     
     // モバイル用履歴を更新
     if (historyListMobile && historyCountMobile) {
       historyCountMobile.textContent = countText
-      historyListMobile.innerHTML = historyHTML
+      generateHistoryElements(historyListMobile)
     }
   }
 
